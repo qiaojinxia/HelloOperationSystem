@@ -9,9 +9,8 @@
 ;由于512 字大小限制 没有添加判断北山除过的文件 逻辑 如果 格式化后删除img内容 会导致读到 第0扇区 
 ;*************************************************************************
 [BITS 16]
-DirSize	equ	0x08
-OffsetOfLoader	equ	0x00
-FatPerSector	equ	0x0080
+DirSize	equ	0x08          ;每个扇区 FAT 目录 个数 长目录 一般是 64 个字节 一个文件 段目录 32 个字节
+FatPerSector	equ	0x0080  ;每个扇区记录多少个FAT表 512 byte/ 4 byte
 %include "cf.inc"
 SearchFileSector	equ	0xff;搜索多少个扇区目录
 org	0x7c00
@@ -64,9 +63,7 @@ Lable_Search_In_Root_Dir_Begin:
 	jz	    Label_No_LoaderBin; 计算每个簇的扇区数
      ;某簇起始LAB逻辑扇区号 = 保留扇区数 + 每个FAT表大小扇区数 × FAT表个数 + (该簇簇号 - 2) × 每簇扇 区数
      ;计算 起始数据簇 的位置 放入寄存器 ax
-	xor	    ax,	ax
-	mov	    es,	ax
-	mov	    bx,	0x8000
+	mov	    bx,	0x08000                         ;0x7c000:0x8000 用来读取FAT表 和目录的信息  
 	mov     ax, WORD[RootDirectoryStart]        ;根目录起始簇 FAT一般是 2号簇
 	add     al,[SectorNo]
 	call    ClusterLBA                             ;2号簇 转换为 FAT所在扇区

@@ -20,7 +20,6 @@ SelectorCode        equ LABEL_DESC_CODE - LABEL_GDT             ; 代码段选�
 SelectorData        equ LABEL_DESC_DATA - LABEL_GDT             ; 数据段选择子
 SelectorVideo       equ LABEL_DESC_VIDEO - LABEL_GDT | SA_RPL3  ; 视频段选择子，特权级3（用户特权级）
 ; GDT选择子 ------------------------------------------------------------------
-
 clear_display:
 	mov	    ax,	cs
   mov	    ds,	ax
@@ -64,8 +63,6 @@ Lable_Search_In_Root_Dir_Begin:
   jz	    Label_No_LoaderBin; 计算每个簇的扇区数
      ;某簇起始LAB逻辑扇区号 = 保留扇区数 + 每个FAT表大小扇区数 × FAT表个数 + (该簇簇号 - 2) × 每簇扇 区数
      ;计算 起始数据簇 的位置 放入寄存器 ax
-  xor	    ax,	ax
-  mov	    es,	ax
   mov	    bx,	0x8000
   mov     ax, WORD[RootDirectoryStart]        ;根目录起始簇 FAT一般是 2号簇
   add     al,[SectorNo]
@@ -256,14 +253,12 @@ loder_begin:
 	mov 	sp,BaseOfStack
 	;加载GDT
 	lgdt	[GDTPtr]
-
 	;关闭外部中断
 	cli
 	;开启A20 快速门
 	in      al,0x92
-  	or 		al, 00000010b
-  	out 	92h, al
-
+  or 		al, 00000010b
+  out 	92h, al
 	;设置cr0 开启保护模式
 	mov 	eax,cr0
 	or 		eax,0x1
@@ -293,6 +288,7 @@ LoaderFileName: db	"KERNEL  BIN",0;寻找的 文件名 loader.bin
 
 [SECTION .code32]
 [BITS 32]
+align 32
 segment32:
   mov   ax, SelectorData
   mov   ds, ax
@@ -304,6 +300,7 @@ segment32:
   mov   gs, ax              ; gs = 视频段
   mov   ebx,0x10;列偏移多少个字符
   mov   ecx,2;一个字符 2个字节 所以乘以2
+  mov   esi,LoadMseeage
   call  showMSG
   jmp   $
 showMSG:
@@ -313,34 +310,25 @@ showMSG:
   mul   ecx ;每个字符 2个字节 所以乘以2
   mov   edi,eax
   mov   ah,0xc
-  mov   al,'L';位置
-  inc    ebx
+  mov   al,[esi];位置
+  cmp   al,0
+  je    fin
+  inc   ebx
+  inc   si
   mov   [gs:edi],ax ;写入屏幕
-  mov   al,'o';位置
-  inc    ebx
-  mov   [gs:edi+2],ax ;写入屏幕
-  mov   al,'a';位置
-  inc     ebx
-  mov   [gs:edi+4],ax ;写入屏幕
-  mov   al,'d';位置
-  inc     ebx
-  mov   [gs:edi+6],ax ;写入屏幕
-  mov   al,'e';位置
-  inc     ebx
-  mov   [gs:edi+8],ax ;写入屏幕
-  mov   al,'d';位置
-  inc    ebx
-  mov   [gs:edi+10],ax ;写入屏幕
-  ret
+  jmp   showMSG
 fin:
   HLT
   jmp   fin
 [SECTION .data32]
 [BITS 32]
 align 32
-DATA32:	
+DATA32:
+_LoadMseeage: DB "Welcome To 32Bits Protect Model!(#^.^#)",0
 BottomOfStack times 0x100 db 0
 TopOfStack equ $ + LOADER_PHY_ADDR
+;--------------------------------------
+LoadMseeage  equ LOADER_PHY_ADDR + _LoadMseeage
 
 
 
