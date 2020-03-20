@@ -41,16 +41,8 @@ clear_display:
 	int		10h
 
 ;=======	display on screen : Start Booting......
-	mov		ax,	1301h
-	mov		bx,	000fh
-	mov		dx,	0000h
-	mov		cx,	10
-	push	ax
-	mov		ax,	ds
-	mov		es,	ax
-	pop		ax
-	mov		bp,	StartBootMessage
-	int		10h
+	mov		si,	StartBootMessage
+  call  DisplayMessage
 Fat32Boot_Start:
 	  xor		  ax,ax
     mov     al, byte [TotalFATs]                ; FAT表个数
@@ -119,7 +111,7 @@ Label_Go_On_Loading_File:
   call    Func_GetFATEntry       ;加载FAT表 第  ax 个 表项 返回 下一个表项 ax
   cmp     word [si + 2],0x0fff;如果 前4位 是 0x0fff 看 后 几位
   jz      Select2
-  goload:
+goload:
   mov     ax, word [LoaderESAddress]       ; set ES:BX = 0100:0000
   mov     es, ax
   mov     ax,word [si]            ;低16位簇号
@@ -136,9 +128,9 @@ Select1:
 Select2:
   cmp     	word [si],0xffff       ;如果  表项 索引 为 0x0fffffff表示 结束
   jz	    Label_File_Loaded   ;文件加载完毕
-  jmp     	goload
+  jmp     goload
 Label_File_Loaded:
-	jmp	loder_begin
+	jmp     Loder_begin
 ;读取 rax 个簇 的内容 返回 ax
 Func_GetFATEntry:
   mov     si,Fatcluster       ;指向 簇号
@@ -178,15 +170,19 @@ Label_Goto_Next_Sector_In_Root_Dir:
      ; display ASCIIZ string at ds:si via BIOS
      ;*************************************************************************
      DisplayMessage:
-         lodsb                                       ; load next character
-          or      al, al                              ; test for NUL character
+          push    ax
+          push    bx
+      .startdisplay:
+          lodsb                                       ; load next character
+          cmp     al, 0x00                              ; test for NUL character
           jz      .DONE
           mov     ah, 0x0E                            ; BIOS teletype
-          mov     bh, 0x00                            ; display page 0
-          mov     bl, 0x07                            ; text attribute
+          mov     bx, 0x000f
           int     0x10                                ; invoke BIOS
-          jmp     DisplayMessage
+          jmp     .startdisplay
      .DONE:
+          pop     bx
+          pop     ax
           ret
      ;*************************************************************************
      ; PROCEDURE ReadSectors 
@@ -245,18 +241,57 @@ Label_Goto_Next_Sector_In_Root_Dir:
           mul     cx
           add     ax, WORD [datasector]               ; base data sector
           ret        ; base data sector          ret
-loder_begin:
+
+
+;=============================================
+;
+;         16位模式下开启保护模式
+;         
+;
+;=============================================
+Loder_begin:
 	mov		ax,cs
 	mov 	es,ax
 	mov 	ds,ax
 	mov 	ss,ax
 	mov 	sp,BaseOfStack
+
+  ;得到BIOS检查的内存信息
+  mov   ebx,0
+  mov   di,_MemCkBuf
+MemChkLoop:
+  mov   eax,0x0000e820
+  mov   ecx,20    ;ecx 的ARDS字节大小
+  mov   edx,0x0534d4150
+  int   0x15
+  jc    MemChkFail;判断 CF 标志位 是不是等于0 CF= 1出错
+  add   di,20     ;指向存放Adres缓冲区 下一个ARDS起始位置
+  inc   dword [_ddMCRCount]
+  cmp   ebx,0
+  je    MemChkSucc
+  jmp   MemChkLoop
+MemChkFail:
+    mov   dword [_ddMCRCount],0 ;检查失败 ARDS 数量为 0
+    mov   si,MMCheckFA
+    call  DisplayMessage
+    mov  si,nextline
+    call  DisplayMessage
+    jmp   Load_GBT
+MemChkSucc:
+    mov  si,nextline
+    call  DisplayMessage
+    mov  si,MMCheckSS
+    call  DisplayMessage
+    mov  si,nextline
+    call  DisplayMessage
+
+Load_GBT:
 	;加载GDT
 	lgdt	[GDTPtr]
 	;关闭外部中断
 	cli
 	;开启A20 快速门
-	in      al,0x92
+	in    al,0x92
   or 		al, 00000010b
   out 	92h, al
 	;设置cr0 开启保护模式
@@ -272,19 +307,24 @@ KillMotor:
 	mov		al,0
 	out		dx,al
 	pop		dx
-	ret	
-LoaderESAddress dw 0x7000
-Sectoroffset   dw 00
-Fatcluster dd 0x00
-NoLoaderMessage:	db	"Can't find you kernal!"
-SectorNo db 0x00
-LoaderFileName: db	"KERNEL  BIN",0;寻找的 文件名 loader.bin
-     msgProgress db ".", 0x00
-     StartBootMessage:	db	"Start Loading Kernel.bin Please Waiting"
-     absoluteSector db 0x00;S
-     absoluteHead   db 0x00;H
-     absoluteTrack  db 0x00;C
-     datasector  dw 0x0000	
+	ret
+
+
+LoaderESAddress: dw 0x7000
+Sectoroffset:   dw 00
+Fatcluster: dd 0x00
+NoLoaderMessage:	db	"Can't find you kernal!",0
+SectorNo: db 0x00
+LoaderFileName: db	"KERNEL  BIN";寻找的 文件名 loader.bin
+     msgProgress: db ".",0
+     nextline:    db  0x0d,0x0a,0
+     StartBootMessage:	db	"Start Loading Kernel.bin Please Waiting",0
+     MMCheckSS:  db  "Memory Check Successful! ",0
+     MMCheckFA:  db  "Memory Check Fail! ",0
+     absoluteSector: db 0x00;S
+     absoluteHead:   db 0x00;H
+     absoluteTrack:  db 0x00;C
+     datasector:  dw 0x0000	
 
 [SECTION .code32]
 [BITS 32]
@@ -300,35 +340,222 @@ segment32:
   mov   gs, ax              ; gs = 视频段
   mov   ebx,0x10;列偏移多少个字符
   mov   ecx,2;一个字符 2个字节 所以乘以2
-  mov   esi,LoadMseeage
-  call  showMSG
-  jmp   $
-showMSG:
-  mov   edi,(80*11);屏幕中间位置
-  add   edi,ebx;自带符偏移
-  mov   eax,edi
-  mul   ecx ;每个字符 2个字节 所以乘以2
-  mov   edi,eax
-  mov   ah,0xc
-  mov   al,[esi];位置
-  cmp   al,0
-  je    fin
-  inc   ebx
-  inc   si
-  mov   [gs:edi],ax ;写入屏幕
-  jmp   showMSG
+  call  CalcMemory
+  push  LoadMseeage;保存字符串指针
+  call  Print
+  add   esp,4 ;清理 字符串指针
+  call  PrintMemSize
 fin:
   HLT
   jmp   fin
+;============================
+;  获取可用内存
+;
+;=============================
+
+CalcMemory:
+  push  esi
+  push  ecx
+  push  edx
+  push  edi
+  mov  esi,MemCkBuf ;拷贝源
+  mov  ecx,[ddMCRCount];循环次数
+.loop:
+  mov  edx,5
+  mov  edi,ARDS;被拷贝地址
+.s1:
+  push  dword [esi];将 esi处的2个字节压栈
+  pop   eax   ;取出
+  stosd       ;将ds:eax 取出 赋值到 edi处
+  add   esi,4 ;edi指针 加 2个字节 指向下一个待读字节
+  dec   edx   ;i --
+  cmp   edx,0 ;判断循环结束尾
+  jnz   .s1     ;循环没有结束
+  cmp   dword [ddType],1
+  jnz   .s2
+  ;计算 OS 可用内存范围
+  mov   eax,[ddbaseAddrLow]  ;起始地址
+  add   eax,[ddLengthLow]   ;长度 32位 系统 表示 4G 所以不需要 ddLengthHight
+  cmp   eax,[ddMemSize]
+  jb    .s2
+  mov   dword[ddMemSize],eax
+.s2:
+  loop  .loop
+  pop  edi
+  pop  edx
+  pop  ecx
+  pop  esi
+  ret
+;============================================================================
+;   显示一个整形数
+;----------------------------------------------------------------------------
+PrintInt:
+  mov ah, 0Fh     ; 0000b: 黑底    1111b: 白字
+  mov al, '0'
+  push  edi
+  mov edi, [ddDispPosition]
+  mov [gs:edi], ax
+  add edi, 2
+  mov al, 'x'
+  mov [gs:edi], ax
+  add edi, 2
+  mov [ddDispPosition], edi ; 显示完毕后，设置新的显示位置
+  pop edi
+
+  mov eax, [esp + 4]
+  shr eax, 24
+  call  PrintAl
+
+  mov eax, [esp + 4]
+  shr eax, 16
+  call  PrintAl
+
+  mov eax, [esp + 4]
+  shr eax, 8
+  call  PrintAl
+
+  mov eax, [esp + 4]
+  call  PrintAl
+  ret
+ ;============================================================================
+;   显示 AL 中的数字
+;----------------------------------------------------------------------------
+PrintAl:
+  push ecx
+  push edx
+  push edi
+  push eax
+
+  mov edi, [ddDispPosition] ; 得到显示位置
+
+  mov ah, 0Fh   ; 0000b: 黑底 1111b: 白字
+  mov dl, al
+  shr al, 4
+  mov ecx, 2
+.begin:
+  and al, 01111b
+  cmp al, 9
+  ja  .1
+  add al, '0'
+  jmp .2
+.1:
+  sub al, 10
+  add al, 'A'
+.2:
+  mov [gs:edi], ax
+  add edi, 2
+
+  mov   al, dl
+  loop  .begin
+  mov   [ddDispPosition], edi ; 显示完毕后，设置新的显示位置
+  pop   eax
+  pop   edi
+  pop   edx
+  pop   ecx
+
+  ret 
+;============================
+;  打印函数
+;
+;=============================
+Print:
+  push  esi
+  push  edi
+  push  ebx
+  push  ecx
+  push  edx
+  mov   esi,[esp + 0x18] ;指向栈向前第六个指针 字符串指针
+  mov   edi,[ddDispPosition] ;输出起始位置
+  mov   ah,0xf ;白底黑字
+.s1:
+  lodsb
+  test  al,al
+  jz    .closePrint
+  cmp   al,10 ;换行符
+  jz    .s2
+  mov   [gs:edi],ax;往屏幕打印
+  add   edi,2  ;下一列
+  jmp   .s1
+.s2: ; 处理换行符 '\n'
+  push  eax
+  mov   eax,edi
+  mov   bl,160    ;每一行 80个字符 一个字符栈2个字节 所以 =160字节
+  div   bl       ;计算当前行的下一行
+  inc   eax
+  mov   bl,160
+  mul   bl       ;将下一行 乘以 每列字数  计算出 下一行起始位置
+  mov   edi,eax  ;指向 
+  pop   eax
+  jmp   .s1
+.closePrint:
+  mov dword [ddDispPosition], edi ; 打印完毕，更新显示位置
+  pop   edx
+  pop   ecx
+  pop   ebx
+  pop   edi
+  pop   esi
+  ret
+PrintMemSize:
+  push  ebx
+  push  ecx
+  mov   eax,[ddMemSize]
+  xor   edx,edx
+  mov   ebx,1024
+  div   ebx
+  push  eax
+  push  strMemSize
+  call  Print
+  add   esp,4
+  call  PrintInt
+  add   esp,4
+  push  strMemtype
+  call  Print
+  add   esp,4
+  pop   ecx
+  pop   ebx
+  ret
+
 [SECTION .data32]
 [BITS 32]
 align 32
 DATA32:
-_LoadMseeage: DB "Welcome To 32Bits Protect Model!(#^.^#)",0
-BottomOfStack times 0x100 db 0
+_ddMCRCount:   dd  0    ;BIOS检查 提供内存信息
+_ddMemSize:    dd  0    ;内存大小
+_ddDispPosition:   dd  (80 * 2 + 0) * 2 ;从第三行开始输出
+_ARDS:
+  _ddbaseAddrLow:   dd  0;地址 低 32位
+  _ddbaseAddrHigh:  dd  0;基地址高32位
+  _ddLengthLow:     dd  0;内存长度(byte) 低32位
+  _ddLengthHigh:    dd  0;内存长度(字节)高 32 位
+  _ddType:          dd  0;ARDS的类型,用于判断是否可以被OS使用
+
+_MemCkBuf:   times 256 db 0 ;存放 由BIOS提供 的内存检查ARDS结构信息,对齐 256 byte/ 20byte = 12 个ARDS结构
+
+_strMemSize:  db "Memory Size:",0
+_strMemtype:  db "MB",10,0
+
+_LoadMseeage: DB "Welcome To 32Bits Protect Model ! (#^.^#)",10,0
+
+BottomOfStack times 0x1000 db 0
 TopOfStack equ $ + LOADER_PHY_ADDR
-;--------------------------------------
+
+ddDispPosition   equ   LOADER_PHY_ADDR + _ddDispPosition
+ddMCRCount  equ   LOADER_PHY_ADDR + _ddMCRCount
+ddMemSize  equ   LOADER_PHY_ADDR + _ddMemSize
+ARDS  equ   LOADER_PHY_ADDR + _ARDS
+  ddbaseAddrLow  equ   LOADER_PHY_ADDR + _ddbaseAddrLow
+  ddbaseAddrHigh  equ   LOADER_PHY_ADDR + _ddbaseAddrHigh
+  ddLengthLow  equ   LOADER_PHY_ADDR + _ddLengthLow
+  ddLengthHigh  equ   LOADER_PHY_ADDR + _ddLengthHigh
+  ddbaseAddrLow  equ   LOADER_PHY_ADDR + _ddbaseAddrLow
+  ddType  equ   LOADER_PHY_ADDR + _ddType
+MemCkBuf   equ   LOADER_PHY_ADDR + _MemCkBuf
 LoadMseeage  equ LOADER_PHY_ADDR + _LoadMseeage
+
+strMemSize   equ   LOADER_PHY_ADDR + _strMemSize
+strMemtype  equ LOADER_PHY_ADDR + _strMemtype
+
+;--------------------------------------
 
 
 
