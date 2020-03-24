@@ -19,3 +19,11 @@ DirSize	equ	0x008    ;扇区字节数/目录项占用大小
 OffsetOfLoader	equ	0x00    ;
 BaseOfStack         equ 0x100                                   ; 基栈
 FatPerSector	equ	0x0080	
+
+KERNEL_ENTRY_POINT_PHY_ADDR     equ 0x1000  ; ld -m elf_i386 -Ttext 0x1000 -o kernel.bin kernel.o main.o i386_kernel.o 通过 -Ttext 指定入口点的地址
+
+;页目录的其实位置 1M处
+PDE_ORIGIN_ADDRESS  equ 0x100000
+
+;页表其实位置 1M往上4K处开始
+PTE_ORIGIN_ADDRESS equ 0x101000

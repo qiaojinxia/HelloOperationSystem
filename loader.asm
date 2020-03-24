@@ -19,6 +19,10 @@ GDTPtr              dw GDTLen - 1                               ; GDT指针.段�
 SelectorCode        equ LABEL_DESC_CODE - LABEL_GDT             ; 代码段选择子
 SelectorData        equ LABEL_DESC_DATA - LABEL_GDT             ; 数据段选择子
 SelectorVideo       equ LABEL_DESC_VIDEO - LABEL_GDT | SA_RPL3  ; 视频段选择子，特权级3（用户特权级）
+
+
+[SECTION .s16]
+[BITS 16]
 ; GDT选择子 ------------------------------------------------------------------
 clear_display:
 	mov	    ax,	cs
@@ -309,7 +313,6 @@ KillMotor:
 	pop		dx
 	ret
 
-
 LoaderESAddress: dw 0x7000
 Sectoroffset:   dw 00
 Fatcluster: dd 0x00
@@ -325,7 +328,6 @@ LoaderFileName: db	"KERNEL  BIN";寻找的 文件名 loader.bin
      absoluteHead:   db 0x00;H
      absoluteTrack:  db 0x00;C
      datasector:  dw 0x0000	
-
 [SECTION .code32]
 [BITS 32]
 align 32
@@ -345,14 +347,24 @@ segment32:
   call  Print
   add   esp,4 ;清理 字符串指针
   call  PrintMemSize
+  call  SwitchPage
+  push  SwitchPageMseeage;保存字符串指针
+  call  Print
+  add   esp,4 ;清理 字符串指针
+  call  InitKernelnelInMemory
+  ;进入内核
+  jmp   SelectorCode:KERNEL_ENTRY_POINT_PHY_ADDR
+  jmp   $
 fin:
   HLT
   jmp   fin
 ;============================
-;  获取可用内存
+;         获取可用内存        
+;  通过BIOS Check 检查获取内存
+;  存在 MemCkBuf中
 ;
+;                   
 ;=============================
-
 CalcMemory:
   push  esi
   push  ecx
@@ -455,8 +467,8 @@ PrintAl:
 
   ret 
 ;============================
-;  打印函数
-;
+;  打印字符                   
+;   函数原型 : void Print(content *ch)                         
 ;=============================
 Print:
   push  esi
@@ -514,7 +526,113 @@ PrintMemSize:
   pop   ecx
   pop   ebx
   ret
-
+;========================================;
+;                开启分页机制
+; 加载页到1M以上空间,页目录地址:0x100000 1M处
+; 页表开始位置:0x101000  1M + 4KB(一个页目录)处                                 
+;                                        
+;========================================;
+SwitchPage:
+  xor   edx,edx         ;除法初始化edx寄存器
+  mov   eax,[ddMemSize] ;获取内存大小
+  mov   ebx,0x400000 ; 一个页表 有1024 项 每一项 表示4KB 所以 是 1024 * 4KB = 4MB 一个页表能表示4MB大小
+  div   ebx          ;计算 你当前拥有内存需要几个页表 才能表示  内存大小/每页页表所能表示的大小
+  mov   ecx,eax      ;ecx 表示 所需页表PDE的格式 
+  test  edx,edx      ;如果 不能整除 就要再添加一个页表
+  jz    .no_remainder;如果 能整除 
+  inc   ecx          ;多加一个 表
+.no_remainder:
+  push  ecx
+  ;首先初始化页目录
+  mov   ax,SelectorData
+  mov   es,ax
+  mov   edi,PDE_ORIGIN_ADDRESS ;页目录起始位置 页目录占4K 
+  xor   eax,eax
+  ;分页的 地址 和属性 占 32字节 前20字节指向物理页的前10位页表起始位置 前 20位 页存在属性 | U/S 属性位值，用户级 | R/W 属性位值，读/写/执行
+  mov   eax,PTE_ORIGIN_ADDRESS | PG_P | PG_US_U | PG_RW_W
+.SetupPDE:
+  stosd
+  add     eax,0x1000 ;每个页表地址 相差4K 4096个字节
+  loop    .SetupPDE ;循环 直到ecx为0
+  pop     eax  ;取出页表个数
+  mov     ebx,0x400;每个页表可以存放 1024 个PTE
+  mul     ebx     ;页表个数 * 1024  得到需要多少个PTD
+  mov     ecx,ebx ;eax = PTE个数,用于循环
+  mov     edi,PTE_ORIGIN_ADDRESS ;页表首地址 
+  xor     eax,eax
+  ;页表从0 开始
+  mov     eax,PG_P | PG_US_U | PG_RW_W
+.SetupPTE:
+  stosd    ;将ds:eax -> ds:edi
+  add      eax,0x1000  ;页指向 物理内存 从 0 ,4K ,8K  ....;
+  loop   .SetupPTE
+  ;设置CR3 寄存器 和CR0 开启分页机制
+  mov     eax,PDE_ORIGIN_ADDRESS
+  mov     cr3,eax
+  mov     eax,cr0;将CR0 PF位置位
+  or      eax,0x80000000
+  mov     cr0,eax
+  jmp     short .SetupWating
+  ;给CPU 一点延迟 让分页机制 生效
+.SetupWating:
+  nop
+  nop
+  ret
+ ;==========================================
+ ;             拷贝内存(按字节)
+ ;函数原型:void *MemoryCpy(void *es:dest,void *ds:src,int size)
+ ;
+ ;========================================== 
+MemoryCpy:
+  push   esi
+  push   edi
+  push   ecx
+  mov    edi,[esp+ 4 * 4]
+  mov    esi,[esp+ 4 * 5]
+  mov    ecx,[esp+ 4 * 6]
+.Copy:
+  cmp    ecx,0
+  jz    .CmpEnd
+  mov    al,[ds:esi]
+  inc    esi
+  mov    [es:edi],al
+  inc    edi
+  loop   .Copy
+.CmpEnd:
+  mov   eax,[esp + 4 * 4] ;返回拷贝后 数据所在位置指针
+  pop   ecx
+  pop   edi
+  pop   esi
+  ret
+ ;==========================================
+ ;             初始化内核文件
+ ;将Kernerl.BIN的内容经过调整对齐后拷贝到内核挂载点
+ ;    
+ ;========================================== 
+ InitKernelnelInMemory:
+    xor  esi,esi
+    xor  ecx,ecx
+    mov  cx,word[KERNEL_PHY_ADDR + 44] ;程序头表数量
+    mov  esi,[KERNEL_PHY_ADDR + 28] ;程序头表 在文件中的偏移量(字节)
+    add  esi,KERNEL_PHY_ADDR       ;第一个程序头 位置
+  .Begin:
+    mov  eax,[esi + 0]
+    cmp  eax,0
+    je   .NoAction              ;e_type  == 0 不可用段
+    ;e_type != 0 说明它是一个可用段
+    push  dword [esi + 16]  ;压入参数 拷贝字节大小
+    mov   eax,[esi + 4]           ;sh_addr 段将要被被加载进的虚拟地址
+    add   eax,KERNEL_PHY_ADDR     ;这里加上实际物理地址
+    push  eax                     ;压入参数 拷贝到的地址
+    push  dword[esi + 8]          ;压入参数 要被拷贝的源地址 sh_offset  该段位于文件中的偏移 
+    call  MemoryCpy               ;调用 函数 拷贝内存 传入3个参数 源起始地址,目标地址,拷贝大小
+    add   esp,4 * 3               ;清理堆栈
+  .NoAction:
+    add   esi,32                  ;指向下一个程序头表 一个表占32字节
+    dec   ecx
+    cmp   ecx,0                   ;判断 是否已经循环完所有
+    jnz   .Begin
+    ret   
 [SECTION .data32]
 [BITS 32]
 align 32
@@ -533,12 +651,12 @@ _MemCkBuf:   times 256 db 0 ;存放 由BIOS提供 的内存检查ARDS结构信�
 
 _strMemSize:  db "Memory Size:",0
 _strMemtype:  db "MB",10,0
-
+_strSwitchPageMseeage: DB "Paging mechanism enabled successfully !",10,0
 _LoadMseeage: DB "Welcome To 32Bits Protect Model ! (#^.^#)",10,0
 
 BottomOfStack times 0x1000 db 0
 TopOfStack equ $ + LOADER_PHY_ADDR
-
+SwitchPageMseeage equ  LOADER_PHY_ADDR + _strSwitchPageMseeage
 ddDispPosition   equ   LOADER_PHY_ADDR + _ddDispPosition
 ddMCRCount  equ   LOADER_PHY_ADDR + _ddMCRCount
 ddMemSize  equ   LOADER_PHY_ADDR + _ddMemSize
